@@ -1,0 +1,652 @@
+---
+title: "SSP Project - On the Randomness of the Stock Market"
+author: "Michelangelo Saveriano"
+date: "26/5/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gt)
+library(pracma)
+library(dplyr)
+library(reshape2)
+library(grid)
+library(ggplot2)
+# py_install("EntropyHub")
+Sys.setenv(RETICULATE_PYTHON = 'C:\\Users\\miche\\AppData\\Local\\Programs\\Python\\Python310\\python.exe')
+library(reticulate)
+# use_python('C:\\Users\\miche\\AppData\\Local\\Programs\\Python\\Python310\\python.exe')
+```
+
+# Introduction
+
+Dynamical systems are often defined in terms of the variation we're experiencing given the point we are in:
+
+$$
+\dot{X} = f(X)
+$$
+
+An increase in the number of the system components, as well as in the interaction complexity, easily makes the system chaotic, showing unpredictability in the long run and extreme sensitivity  on the initial conditions. If we keep increasing the system complexity it will eventually become fully random, for instance this is what happens in the case of particles motion whose position can be thought as the sum of iid random variables. This kind of motion is named **Brownian Motion**.
+
+Our project aims to investigate the price evolution in the stock market eventually proving if it can be considered a form of random walk, specifically a *Geometric Brownian Motion (GBM)*, unpredictable by definition, or if it can be thought as a *Chaotic System* instead. 
+
+To do so we'll use various methods used to characterize dynamical systems specifically:
+
+* **Kolmogorov Entropy** to estimate the amount of randomness and disorder of the system;
+* **Hurst Exponent** to characterize the time series behavior.
+
+We'll then compare the results coming from a simulated system with the ones from real world data and we will conclude reporting if any difference can be appreciated.
+
+# Random Walks - Geometric Brownian Motion
+
+Before proceeding we first have to define what *Random Walks* and *Geometric Brownian Motion* are.
+
+### Random Walks
+
+A random walk is a random process that describes a path that consists of a succession of random steps. Below we can see an example of 2D random walk on $\mathbb{Z}^2$ which start at $0,0$ and at each time step the point moves $-1$ or $1$ with equal probability on each axis. 
+
+```{r random_walk_2D, echo=FALSE, fig.show='animate', fig.width=6, fig.height=6, cache=TRUE, interval=0.025, aniopts="controls,loop", fig.align = 'center'}
+
+set.seed(1234)
+x <- 0
+y <- 0
+x_last <- x
+y_last <- y
+for (i in 1:2000){
+  x_last <- x_last + sample(c(-1, 1), 1)
+  y_last <- y_last + sample(c(-1, 1), 1)
+  x <- c(x, x_last)
+  y <- c(y, y_last)
+  plot(x, y, type = 'l', lwd=1.5)
+  points(x_last, y_last, pch = 19)
+}
+```
+
+### Geometric Brownian Motion
+
+The Brownian motion is the random motion of particles suspended in a medium, it can be described mathematically by the Wiener process $W_t$, a continuous-time stochastic process characterized by the following properties:
+
+* $W_0 = 0$;
+* $W_t$ is almost surely continuous;
+* $W_t$ has indepedent increments;
+* $W_t - W_s \sim \mathcal{N}(0,\ t-s)$ for $0\leq s \leq t$, where $\mathcal{N}(\mu,\ \sigma)$ is the normal distribution with expected value $\mu$ and variance $\sigma^2$.
+
+The Wiener process can be constructed as limit of a random walk.
+
+A geometric Brownian motion (GBM) is a continuous-time stochastic process in which the logarithm of the process follows a Brownian motion, often with a drift. It can be defined as the process that satisfies the following stochastic differential equation (SDE):
+
+$$
+d S_t = \mu S_t d t + \sigma S_t dW_t
+$$
+where $W_t$ is a Wiener process, $\mu$ is the drift and $\sigma$ is the amount of volatility.
+
+Rewriting the former SDE into
+
+$$
+\frac{d S_t}{S_t} = \mu dt + \sigma dW_t
+$$
+
+we can interpret it as the percentage change at each time step is equal to the the constant drift plus the random variation of the Wiener process times the volatility term.
+
+Once estimated the proper values for $\mu$ and $\sigma$ we will be ready to simulate the GBM assuming:
+
+* $dt = t - (t-1) = 1$, unitary time step;
+* $dW_t = W_t - W_{t-1} \sim \mathcal{N}(0,\ 1)$, random increments drawn from a normal distribution.
+
+# Entropy
+
+Since its first usage in physics and thermodynamics **Entropy** has always been a measure of disorder and randomness of a system.
+
+### Entropy of Random Variable
+
+*Shannon* expanded it defining the entropy of a random variable as the average level of information and surprise inherent to the variable's possible outcomes through the well known equation:
+
+$$
+H(X) = \mathbb{E}[-log_b(X)] = -\sum_{x \in \mathcal{X}} p(x)\ log_b\big(p(x)\big)
+$$
+
+The usual values for $b$ are $b=2$, $b=e$ and, less likely, $b=10$.  
+
+A generalization of this kind of entropy is provided by the *Rényi Entropy* which is defined in the following way:
+
+$$
+H_\alpha(X) = \begin{cases}
+\frac{1}{1-\alpha} log_b \sum_{x \in \mathcal{X}}p(x)^\alpha & \alpha > 0,\ \alpha \neq 1 \\
+H(X) & \alpha = 1 \\
+\end{cases}
+$$
+
+### Entropy of Dynamical System
+
+Similarly to what has been done for random variables, a measure of unpredictability can be derived also for dynamical system.
+
+Let $x(t)$ be the trajectory of a dynamical system in the $D$-dimensional phase space. Divide the phase space into hypercubes of volume $\epsilon^D$. Let $p_{i_0, \dots, i_n}$ be the probability that the trajectory is in hypercube $i_j$ at time $t=j\tau$ with $j=0,\dots, n$, where $\tau$ is the sampling period:
+
+$$
+p_{i_0, \dots, i_n} = \mathbb{P} \big\{ x(t = j\tau) \in i_j \ \forall \ j =0, \dots, n \big\}
+$$
+
+Then we define
+
+$$
+K_n = - \sum_{i_0, \dots, i_n} p_{i_0, \dots, i_n} log \ p_{i_0, \dots, i_n}
+$$
+as the amount of information needed to locate the system on a given trajectory and $K_{N+1} - K_N$ as the information needed to predict which hypercube the trajectory will be in at time $(n+1) \tau$ given trajectories up to $n \tau$.
+
+The *Kolmogorov entropy* is then defined by:
+
+$$
+\begin{align}
+K  & \equiv \lim_{\tau \rightarrow 0} \lim_{\epsilon \rightarrow 0} \lim_{N \rightarrow \infty} \frac{1}{N\tau} \sum_{n=0}^{N-1} \big( K_{n+1} - K_n \big) \\
+ & = - \lim_{\tau \rightarrow 0} \lim_{\epsilon \rightarrow 0} \lim_{N \rightarrow \infty} \frac{1}{N\tau} \sum_{i_1, \dots, i_N} p_{i_0, \dots, i_n} log \ p_{i_0, \dots, i_n}
+\end{align}
+$$
+
+It is a crucial quantity for the characterization of chaotic systems, for instance:
+
+* $K = 0$ in regular systems;
+* $K > 0$ in chaotic systems;
+* $K = +\infty$ (*unbounded*) in random system.
+
+
+The Kolmogorov entropy is also related to the positive Lyapunov exponents $\lambda_+$ of the system:
+
+$$
+K = \int \sum_+ \rho(X)\lambda_+(x)dX
+$$
+
+where $\rho(X)$ denotes the density of the attractor. 
+
+### The Estimation of the Kolmogorov Entropy
+
+The Kolmogorov Entropy offers information on how chaotic, or possibly random, the underlying system is, however, it is very difficult to obtain estimates of $K$ without the knowledge of the system's differential equations, directly from a time signal. 
+We can then define a new measure of entropy based on Rényi's entropy of order $\alpha$:
+
+$$
+K^{(\alpha)} = - \lim_{\tau \rightarrow 0} \lim_{\epsilon \rightarrow 0} \lim_{N \rightarrow \infty} \frac{1}{N\tau} \frac{1}{\alpha - 1} log \sum_{i_1, \dots, i_N} p_{i_0, \dots, i_n}^\alpha
+$$
+It is easy to see that for $\alpha \rightarrow 1$ it converges to the original Kolmogorov entropy $K^{(1)} = K$ and $K^{(q)} <= K^{(s)}$ for every $s > q$.
+
+The case $\alpha=2$, $K^{(2)}=K_2$ from now on, is of particular interest because of the following properties:
+
+1. $K_2 \geq 0$
+2. $K_2 \leq K$, it is a lower bound on the true Kolmogorov entropy
+3. $K_2 \neq 0$ for chaotic systems
+4. $K_2 \rightarrow \infty$ for random systems
+
+and it turns out to be also numerically close to $K$ in many typical cases.
+
+
+However, the most important property of $K_2$ is that it can be easily estimated for experimental signals using the generalized correlation integrals $C_d(r)$:
+
+$$
+\begin{align}
+C_{d}(r) &= \lim_{N \rightarrow \infty} \frac{1}{N^2} \bigg[ \text{Numer of pairs } i, j \text{ with } \Big( \sum_{k=1}^{d} |X_{i+k} - X_{j+k}|^2 \Big)^{1/2} < r \bigg] \\
+&= \lim_{N \rightarrow \infty} \frac{1}{N^2} \sum_{i=1}^N \sum_{j=1}^N \Bigg( H \bigg( r - \Big( \sum_{k=1}^{d} |X_{i+k} - X_{j+k}|^2 \Big)^{1/2} \bigg) \Bigg)
+\end{align}
+$$
+where $H$ is the Heaviside function, $r$ is the distance threshold and $d$ is the number of measurements used for each coordinate.
+
+It can be shown that $C_d(r) \underset{r \rightarrow 0 \\ d \rightarrow \infty}{\sim} r^\nu exp(-d \tau K_2)$ where $\nu$ denotes the correlation exponent, moreover, it has been proved that $\nu \lesssim D$ where $D$ is the fractal dimension of the attractor.
+
+From the last expression we can finally derive
+
+$$
+\begin{align}
+&K_{2,d}(r) = \frac{1}{\tau} log \frac{C_d(r)}{C_{d+1}(r)} &
+\lim_{r \rightarrow 0 \\ d \rightarrow \infty} K_{2,d}(r) \sim K_2
+\end{align}
+$$
+
+# Hurst Exponent
+
+The *Hurst exponent* is a measure widely used to characterize time series, it quantifies the relative tendency of a time series either to regress strongly to the mean or to cluster in a direction. 
+
+The values of the Hurst exponent range between $0$ and $1$ and based on the value of $Hu$, we can classify any time series into one of the three categories:
+
+* $Hu < 0.5 \Rightarrow$ the series is mean-reverting, it means that high values are followed by low values. The closer the value is to $0$, the stronger the mean-reversion is.
+* $Hu = 0.5 \Rightarrow$ the series is a geometric random walk
+* $Hu > 0.5 \Rightarrow$ the series is trending, it means that high values are followed by high values. The closer the value is to $1$, the stronger the trend.
+
+It is defined in terms of the asymptotic behavior of the rescaled range:
+
+$$
+\mathbb{E} \bigg[ \frac{R(n)}{S(n)} \bigg] = Cn^{Hu} \text{ as } n \rightarrow \infty
+$$
+where:
+
+* $R(n)$ is the range of the first $n$ cumulative deviations from the mean;
+* $S(n)$ is the series of the first $n$ standard deviations;
+* $n$ is the number of data point in the time series;
+* $C$ is a constant.
+
+# Simulation
+
+In this section we will simulate two types of GBM: with drift ($\mu=\bar{\mu}$ where $\bar{\mu}$ is the SP500 average daily return) and without drift ($\mu=0$). In both cases the volatility $\sigma=\bar{\sigma}$ will be set equal to the SP500 average daily volatility.
+
+In order to do that first we have to compute the average return $\bar{\mu}$ and the average volatility $\bar{\sigma}$.
+
+Let $S_t$ be the stock price, we define $PC(t) = \frac{S_{t+1} - S_t}{S_t}$ the percentage change between two time instants and $R(t) = log \ S_{t+1} - log \ S_t = log(1 + PC(t))$ as the log-return. 
+
+We can now proceed with the estimation of $\bar{\mu}$ and $\bar{\sigma}$, respectively:
+
+$$
+\begin{align} 
+& \bar{\mu} = \mathbb{E} \big[ PC(t) \big] & \bar{\sigma}^2 = \mathbb{V}ar \big[ PC(t) \big]
+\end{align}
+$$
+
+The data used are the daily SP500 prices from `r sp500$date[length(sp500$date)]` to `r sp500$date[1]`. 
+
+```{r}
+# Evaluate mean and standard deviation of percentage returns
+sp500_price <- rev(sp500$open)
+pct_change_mean <- mean(diff(sp500_price) / sp500_price[-length(sp500_price)])
+pct_change_sd <- sd(diff(sp500_price) / sp500_price[-length(sp500_price)])
+print(paste('Mean Pct-Returns', format(pct_change_mean, scientific = T), 
+            ', Sd Pct-Returns', format(pct_change_sd, scientific = T)))
+
+# Define mu_bar and sigma_bar
+mu_bar <- pct_change_mean
+sigma_bar <- pct_change_sd
+```
+
+To simulate a GBM of length $n$ we have to:
+
+1. evaluate $n-1$ percentage changes $PC(t) = \mu + \sigma w(t) \ \forall \ t=1, \dots, (n-1)$, where $w(t)$ are iid $\mathcal{N}(0, 1)$;
+2. compute GBM signal according to $S(t) = S_0 \prod_{i=1}^t PC(t)$. 
+
+
+```{r}
+simulate_GBM <- function(n, mu, sigma, S0 = 1){
+  w <- rnorm(n-1, 0, 1)
+  pc <- mu + sigma * w
+  signal <- cumprod(c(S0, 1+pc))
+  return(signal)
+}
+```
+
+### GBM Without Drift $\mu = 0$
+
+First we analyze the case without drift, $\mu = 0$.
+
+```{r}
+n <- 5000
+mu <- 0
+sigma <- sigma_bar
+gbm <- simulate_GBM(n, mu, sigma)
+```
+
+Here we simulate several GBM and we plot them on both linear and log scale. 
+
+```{r, echo=FALSE, cache=TRUE}
+set.seed(1234)
+plot(simulate_GBM(n, mu, sigma), type='l', ylim=c(exp(-1), exp(1)),
+     col = palette.colors(palette = 'Tableau')[1],
+     xlab = '', ylab = '', main = 'Geometric Brownian Motion')
+for (i in 2:10)
+  lines(simulate_GBM(n, mu, sigma), col = palette.colors(palette = 'Tableau')[i])
+
+set.seed(1234)
+plot(simulate_GBM(n, mu, sigma), type='l', ylim=c(exp(-1), exp(1)),
+     col = palette.colors(palette = 'Tableau')[1], log='y',
+     xlab = '', ylab = '', main = 'Geometric Brownian Motion - Log Scale')
+for (i in 2:10)
+  lines(simulate_GBM(n, mu, sigma), col = palette.colors(palette = 'Tableau')[i])
+
+```
+
+#### Kolmogorov Entropy Estimation - $K_2$
+
+Unfortunately there is no library in R implementing the $K_2$ entropy therefore we had to rely on the python package *EntropyHub* to perform such estimates.
+
+Here we compare the $K_2$ entropy estimated for several signals, specifically:
+
+* the GBM simulated above $S(t)$
+* the log-returns for the GBM simulated above $R(t)$
+* a periodic signal $Sine(t)$
+* a noise signal $Noise(t)$ (normal iid samples)
+
+```{python}
+import EntropyHub
+import numpy as np
+from matplotlib import pyplot as plt
+import pandas as pd
+import seaborn as sns
+
+_s = np.array(r.gbm)
+_r = np.diff(np.log(_s))
+_sine = np.sin(np.linspace(0, 10, _s.size)) * np.std(_s)
+_noise = np.random.normal(size=_s.size) * np.std(_s)
+
+fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(nrows=2, ncols=2)
+
+ax1.plot(_s, label='S(t)', alpha=.8)
+ax2.plot(_r, label='R(t)', alpha=.8)
+ax3.plot(_sine, label='Sine(t)', alpha=.8)
+ax4.plot(_noise, label='Noise(t)', alpha=.8)
+ax1.legend()
+ax2.legend()
+ax3.legend()
+ax4.legend()
+plt.show()
+```
+
+```{python, cache=TRUE}
+d = 15
+_s_entropy = EntropyHub.K2En(_s, m=d)[0]
+print('S(t) entropy:', _s_entropy)
+_r_entropy = EntropyHub.K2En(_r, m=d)[0]
+print('R(t) entropy:', _r_entropy)
+```
+
+Increasing the value of $d$ makes the procedure numerically unstable, for this reason we will use $d=5$.
+
+```{python, results='hide'}
+d = 5
+_s_entropy = EntropyHub.K2En(_s, m=d)[0]
+_r_entropy = EntropyHub.K2En(_r, m=d)[0]
+_sine_entropy = EntropyHub.K2En(_sine, m=d)[0]
+_noise_entropy = EntropyHub.K2En(_noise, m=d)[0]
+```
+
+```{python, echo=FALSE, results='hide'}
+d = 5
+plt.plot(np.arange(1, d+1), _s_entropy, label='S(t)'),
+plt.plot(np.arange(1, d+1), _r_entropy, label='R(t)'),
+plt.plot(np.arange(1, d+1), _sine_entropy, label='Sine(t)'),
+plt.plot(np.arange(1, d+1), _noise_entropy, label='Noise(t)'),
+plt.ylabel('K2 Entropy', fontsize=14)
+plt.xlabel('d', fontsize=14)
+plt.title('Signals Entropy', fontsize=18)
+plt.legend()
+plt.show()
+```
+
+From the plot above some considerations can be carried out:
+
+* evaluate the entropy using $R(t)$ instead of $S(t)$ makes the results more reliable;
+* due to numerical issues it is not possible to discriminate between chaotic and random processes, however;
+* the comparison with a noise process can give us insight on how a random process would behave.
+
+#### Hurst Exponent
+
+Here we test the hurst exponent of a GBM without drift.
+
+```{r, message=FALSE, error=FALSE, cache=TRUE}
+M = 50
+# Hurst exponent of S(t)
+hu_s_df <- data.frame(t(sapply(1:M, function(x) unlist(hurstexp(simulate_GBM(n, mu, sigma), display = F)))))
+melt(hu_s_df) %>%
+  ggplot() + 
+  geom_histogram(aes(x=value), bins = 15) + 
+  ggtitle('Hurst Exponent of S(t)') +
+  facet_wrap( ~ variable)
+
+# Hurst exponent of R(t)
+hu_r_df <- data.frame(t(sapply(1:M, function(x) unlist(hurstexp(diff(log(simulate_GBM(n, mu, sigma))), display = F)))))
+melt(hu_r_df) %>%
+  ggplot() + 
+  geom_histogram(aes(x=value), bins = 15) + 
+  ggtitle('Hurst Exponent of R(t)') +
+  facet_wrap( ~ variable)
+```
+
+The Hurst exponent shows something we already noted before analyzing the $K_2$ values: when computed on the GBM the results are unreliable. For instance, when computed on the GBM itself almost all the $Hu$ estimates agree on the signal being strongly trending while, when computed using the log-returns, they show uncertainty on the trending/mean reverting property of the signal.
+
+### GBM With Drift $\mu =$ `r format(mu_bar, scientific=T)`
+
+Here we repeat the same steps we performed before and we analyze if the presence of a drift component produce any difference.
+
+```{r}
+n <- 5000
+mu <- mu_bar
+sigma <- sigma_bar
+gbm <- simulate_GBM(n, mu, sigma)
+```
+
+Here we simulate several GBM and we plot them on both linear and log scale. 
+
+```{r, echo=FALSE, cache=TRUE}
+set.seed(1234)
+plot(simulate_GBM(n, mu, sigma), type='l', ylim=c(exp(-5), exp(2.5)),
+     col = palette.colors(palette = 'Tableau')[1],
+     xlab = '', ylab = '', main = 'Geometric Brownian Motion')
+for (i in 2:10)
+  lines(simulate_GBM(n, mu, sigma), col = palette.colors(palette = 'Tableau')[i])
+
+set.seed(1234)
+plot(simulate_GBM(n, mu, sigma), type='l', ylim=c(exp(-.5), exp(2.5)),
+     col = palette.colors(palette = 'Tableau')[1], log='y',
+     xlab = '', ylab = '', main = 'Geometric Brownian Motion - Log Scale')
+for (i in 2:10)
+  lines(simulate_GBM(n, mu, sigma), col = palette.colors(palette = 'Tableau')[i])
+
+```
+
+#### Kolmogorov Entropy Estimation - $K_2$
+
+As before we compare the $K_2$ entropy estimated for several signals, specifically:
+
+* the GBM simulated above $S(t)$
+* the log-returns for the GBM simulated above $R(t)$
+* a periodic signal $Sine(t)$
+* a noise signal $Noise(t)$ (normal iid samples)
+
+```{python}
+_s = np.array(r.gbm)
+_r = np.diff(np.log(_s))
+_sine = np.sin(np.linspace(0, 10, _s.size)) * np.std(_s)
+_noise = np.random.normal(size=_s.size) * np.std(_s)
+
+fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(nrows=2, ncols=2)
+
+ax1.plot(_s, label='S(t)', alpha=.8)
+ax2.plot(_r, label='R(t)', alpha=.8)
+ax3.plot(_sine, label='Sine(t)', alpha=.8)
+ax4.plot(_noise, label='Noise(t)', alpha=.8)
+ax1.legend()
+ax2.legend()
+ax3.legend()
+ax4.legend()
+plt.show()
+```
+
+```{python, results='hide'}
+d = 5
+_s_entropy = EntropyHub.K2En(_s, m=d)[0]
+_r_entropy = EntropyHub.K2En(_r, m=d)[0]
+_sine_entropy = EntropyHub.K2En(_sine, m=d)[0]
+_noise_entropy = EntropyHub.K2En(_noise, m=d)[0]
+```
+
+```{python, echo=FALSE, results='hide'}
+d = 5
+plt.plot(np.arange(1, d+1), _s_entropy, label='S(t)'),
+plt.plot(np.arange(1, d+1), _r_entropy, label='R(t)'),
+plt.plot(np.arange(1, d+1), _sine_entropy, label='Sine(t)'),
+plt.plot(np.arange(1, d+1), _noise_entropy, label='Noise(t)'),
+plt.ylabel('K2 Entropy', fontsize=14)
+plt.xlabel('d', fontsize=14)
+plt.title('Signals Entropy', fontsize=18)
+plt.legend()
+plt.show()
+```
+
+Looking a the plots above we can formulate the following considerations:
+
+* as before, evaluate the entropy using $R(t)$, instead of $S(t)$, makes the results more reliable;
+* the GBM signal $S(t)$ shows an higher predictability, while;
+* the log-returns signal $R(t)$ is indistinguishable from the random process.
+
+#### Hurst Exponent
+
+Now we test the Hurst exponent of a GBM with drift. In this case we expect that the drift acts as the trend and therefore we're expecting that, on average, $Hu > 0.5$.
+
+```{r, message=FALSE, error=FALSE, cache=TRUE}
+M = 50
+# Hurst exponent of S(t)
+hu_s_df <- data.frame(t(sapply(1:M, function(x) unlist(hurstexp(simulate_GBM(n, mu, sigma), display = F)))))
+melt(hu_s_df) %>%
+  ggplot() + 
+  geom_histogram(aes(x=value), bins = 15) + 
+  ggtitle('Hurst Exponent of S(t)') +
+  facet_wrap( ~ variable)
+
+# Hurst exponent of R(t)
+hu_r_df <- data.frame(t(sapply(1:M, function(x) unlist(hurstexp(diff(log(simulate_GBM(n, mu, sigma))), display = F)))))
+melt(hu_r_df) %>%
+  ggplot() + 
+  geom_histogram(aes(x=value), bins = 15) + 
+  ggtitle('Hurst Exponent of R(t)') +
+  facet_wrap( ~ variable)
+```
+
+Despite what we expected, the $Hu$ estimates show uncertainty on the trending/mean reverting property of the signal. We think that a greater $\mu / \sigma$ ratio would help making $Hu > 0.5$: a stronger trend in conjunction with a smaller volatility.
+
+# The Stock Market
+
+Now we want to use what we have defined until this point to investigate the stock market.
+
+### The Data
+
+The data we are going to use are the daily closing price of $441$ stocks going from 2010-01-05 to 2021-12-27 (3018 samples for each stock).
+```{r}
+data <- read.csv('prices.csv')
+knitr::kable(head(data[, 1:6]))
+```
+
+Each price time series is divided by the price in the first time instant.
+
+```{r}
+prices <- apply(data[, -1], 2, function(x) x/x[1])
+```
+
+```{r, echo=FALSE}
+assets <- sample(dim(prices)[2], 10)
+prices[, assets] %>% 
+  melt() %>%
+  ggplot(aes(x=Var1, y=value, col=Var2)) + 
+  geom_line() + 
+  ggtitle('Prices - Linear Scale') +
+  labs(x='Index', y='Price') 
+
+prices[, assets] %>% 
+  melt() %>%
+  ggplot(aes(x=Var1, y=value, col=Var2)) + 
+  geom_line() + 
+  ggtitle('Prices - Log Scale') +
+  labs(x='Index', y='Price') + 
+  coord_trans(y="log2")
+```
+
+### Kolmogorov Entropy Estimation - $K_2$
+
+We can now select $M=50$ stocks at random and compute their $K_2$ values using the price signal $S(t)$. We show both the raw and the aggregated $K_2$ values comparing the latter with the values we got before for a noise and a cyclical signal.
+
+```{python}
+import seaborn as sns
+_prices = r.prices
+d = 5
+ncol = _prices.shape[1]
+M = 50
+_assets = np.random.choice(ncol, M)
+K2_prices = np.zeros((M, d))
+for i, idx in enumerate(_assets) :
+  K2_prices[i] = EntropyHub.K2En(_prices[:, idx], m=d)[0]
+  
+K2_prices_df = pd.DataFrame(K2_prices, columns = range(1, d+1)).reset_index().melt('index')
+K2_prices_df.columns = ['Stock Index', 'd', 'K2']
+```
+
+```{python, echo=FALSE}
+fig, ax = plt.subplots()
+sns.lineplot(data=K2_prices_df, x='d', y='K2', hue='Stock Index', ax=ax)
+plt.show()
+
+
+fig, (ax1, ax2) = plt.subplots(2)
+sns.lineplot(data=K2_prices_df, x='d', y='K2', ax=ax1, label='S(t)')
+ax1.plot(np.arange(1, d+1), _sine_entropy, label='Sine(t)')
+ax1.plot(np.arange(1, d+1), _noise_entropy, label='Noise(t)')
+ax1.legend()
+sns.lineplot(data=K2_prices_df, x='d', y='K2', ax=ax2, label='S(t)')
+ax2.plot(np.arange(1, d+1), _sine_entropy, label='Sine(t)')
+ax2.legend()
+plt.show()
+```
+
+Here we do the same using the log-returns $R(t)$ instead.
+
+```{python}
+_log_returns = np.diff(np.log(_prices), axis=0)
+
+K2_log_returns = np.zeros((M, d))
+for i, idx in enumerate(_assets) :
+  K2_log_returns[i] = EntropyHub.K2En(_log_returns[:, idx], m=d)[0]
+  
+K2_log_returns_df = pd.DataFrame(K2_log_returns, columns = range(1, d+1)).reset_index().melt('index')
+K2_log_returns_df.columns = ['Stock Index', 'd', 'K2']
+```
+
+```{python, echo=FALSE}
+fig, ax = plt.subplots()
+sns.lineplot(data=K2_log_returns_df, x='d', y='K2', hue='Stock Index', ax=ax)
+plt.show()
+
+
+fig, (ax1, ax2) = plt.subplots(2)
+sns.lineplot(data=K2_log_returns_df, x='d', y='K2', ax=ax1, label='S(t)')
+ax1.plot(np.arange(1, d+1), _sine_entropy, label='Sine(t)')
+ax1.plot(np.arange(1, d+1), _noise_entropy, label='Noise(t)')
+ax1.legend()
+sns.lineplot(data=K2_log_returns_df, x='d', y='K2', ax=ax2, label='S(t)')
+ax2.plot(np.arange(1, d+1), _noise_entropy, label='Noise(t)')
+ax2.legend()
+plt.show()
+```
+
+The plots strongly resemble the ones we got before, this suggests that the prices may indeed follow a *GBM with drift*.
+
+### Hurst Exponent
+
+Now we proceed evaluating the Hurst Exponent $Hu$ for all the assets' log-returns. We have indeed already shown that the evaluate $Hu$ directly from the price signal often leads to incorrect results.
+
+```{r, cache=TRUE, message=FALSE, error=FALSE}
+price_log_returns <- diff(log(prices))
+# Hurst exponent of R(t)
+hu_price_log_returns_df <- data.frame(t(apply(price_log_returns, 2, function(x) unlist(hurstexp(x, display = F)))))
+melt(hu_price_log_returns_df) %>%
+  ggplot() + 
+  geom_histogram(aes(x=value), bins = 15) + 
+  ggtitle('Hurst Exponent of R(t)') +
+  facet_wrap( ~ variable)
+```
+
+From the plot above we can clearly see that many of the $Hu$ distributions are centered in $Hu = 0.5$, value such that the process is considered a random walk.
+
+# Conclusion
+
+In this project we have investigated the stock market through the usage of the *Kolmogorov Entropy* and the *Hurst Exponent*. 
+
+Though the assumption of the price being a Geometric Random Walk can be proven false, i.e. looking at the *Autocorrelation Function* of any random stock below,
+```{r}
+set.seed(0)
+stock <- sample(colnames(prices),1)
+print(paste('Stock:', stock))
+```
+
+```{r, echo=FALSE}
+par(mfrow=c(1, 3))
+acf(price_log_returns[, stock])
+acf(abs(price_log_returns[, stock]))
+acf(sign(price_log_returns[, stock]))
+```
+
+our experiments gave us many insights on the unpredictable nature of the  stock market. Often prices and random processes were indistinguishable according to the measures we presented, see the distributions of the Hurst exponents $Hu$ centered around $0.5$ or the $K_2$ values close to the noise level. 
+
+We believe that the unpredictability of this system is rooted in amount of interactions it has to deal with, such complexity makes the prediction of the following price impossible. 
+Studies in the field of high frequency trading have shown that the prediction window, time span within which is possible to perform prediction with high accuracy, lasts, indeed, just few millisecond. 
